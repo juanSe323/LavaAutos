@@ -49,50 +49,72 @@ try {
             $placa = 'SP-' . strtoupper(substr(uniqid(), -6));
         }
 
-        $stmtVeh = $db->prepare("SELECT id FROM vehiculos WHERE placa = :placa");
+        $stmtVeh = $db->prepare("SELECT id, cliente_id FROM vehiculos WHERE placa = :placa");
         $stmtVeh->execute([':placa' => $placa]);
         $vehiculo = $stmtVeh->fetch();
 
         if ($vehiculo) {
             $vehiculoId = $vehiculo['id'];
+            $clienteId = $vehiculo['cliente_id']; // si el vehículo ya está registrado a un cliente, se hereda aquí
         } else {
             $stmtInsVeh = $db->prepare("INSERT INTO vehiculos (placa, tipo) VALUES (:placa, :tipo)");
             $stmtInsVeh->execute([':placa' => $placa, ':tipo' => $tipoVehiculo]);
             $vehiculoId = $db->lastInsertId();
+            $clienteId = null;
         }
 
-        // Los precios se calculan del lado del servidor, nunca se confía en lo que mande el frontend
-        $placeholders = implode(',', array_fill(0, count($tiposServicioIds), '?'));
-        $stmtTipos = $db->prepare("SELECT id, precioBase FROM tipos_servicio WHERE id IN ($placeholders)");
-        $stmtTipos->execute($tiposServicioIds);
-        $tiposEncontrados = $stmtTipos->fetchAll();
+        // Si el vehículo pertenece a un cliente con convenio activo, se aplica su descuento automáticamente.
+        // Esto es lo que reconoce una placa de convenio sin que el empleado tenga que hacer nada extra.
+        $descuentoPorcentaje = 0;
+        if ($clienteId) {
+            $stmtDescuento = $db->prepare("
+                SELECT co.descuentoPorcentaje
+                FROM clientes cl
+                JOIN convenios co ON co.id = cl.convenio_id
+                WHERE cl.id = :cliente_id
+            ");
+            $stmtDescuento->execute([':cliente_id' => $clienteId]);
+            $convenio = $stmtDescuento->fetch();
+            if ($convenio) {
+                $descuentoPorcentaje = $convenio['descuentoPorcentaje'];
+            }
+        }
 
-        if (count($tiposEncontrados) === 0) {
+        // Los precios se calculan del lado del servidor según la combinación servicio+vehículo
+        $placeholders = implode(',', array_fill(0, count($tiposServicioIds), '?'));
+        $stmtTarifas = $db->prepare("SELECT tipo_servicio_id, precio FROM tarifas WHERE tipo_vehiculo = ? AND tipo_servicio_id IN ($placeholders)");
+        $stmtTarifas->execute(array_merge([$tipoVehiculo], $tiposServicioIds));
+        $tarifasEncontradas = $stmtTarifas->fetchAll();
+
+        if (count($tarifasEncontradas) === 0) {
             $db->rollBack();
             http_response_code(400);
-            echo json_encode(["status" => "error", "message" => "Ningún tipo de servicio válido fue encontrado"]);
+            echo json_encode(["status" => "error", "message" => "Ninguno de los servicios seleccionados está disponible para este tipo de vehículo"]);
             exit();
         }
 
-        $total = 0;
-        foreach ($tiposEncontrados as $t) {
-            $total += $t['precioBase'];
+        $subtotal = 0;
+        foreach ($tarifasEncontradas as $t) {
+            $subtotal += $t['precio'];
         }
+        $total = round($subtotal * (1 - ($descuentoPorcentaje / 100)), 2);
 
-        $stmtServicio = $db->prepare("INSERT INTO servicios (estado, total, empleado_id, vehiculo_id) VALUES ('PENDIENTE', :total, :empleado_id, :vehiculo_id)");
+        $stmtServicio = $db->prepare("INSERT INTO servicios (estado, total, descuento_porcentaje, empleado_id, cliente_id, vehiculo_id) VALUES ('PENDIENTE', :total, :descuento, :empleado_id, :cliente_id, :vehiculo_id)");
         $stmtServicio->execute([
             ':total' => $total,
+            ':descuento' => $descuentoPorcentaje,
             ':empleado_id' => $empleado['id'],
+            ':cliente_id' => $clienteId,
             ':vehiculo_id' => $vehiculoId
         ]);
         $servicioId = $db->lastInsertId();
 
         $stmtDetalle = $db->prepare("INSERT INTO detalle_servicios (servicio_id, tipo_servicio_id, cantidad, subtotal) VALUES (:servicio_id, :tipo_servicio_id, 1, :subtotal)");
-        foreach ($tiposEncontrados as $t) {
+        foreach ($tarifasEncontradas as $t) {
             $stmtDetalle->execute([
                 ':servicio_id' => $servicioId,
-                ':tipo_servicio_id' => $t['id'],
-                ':subtotal' => $t['precioBase']
+                ':tipo_servicio_id' => $t['tipo_servicio_id'],
+                ':subtotal' => $t['precio']
             ]);
         }
 
@@ -104,6 +126,8 @@ try {
             "servicio" => [
                 "id" => $servicioId,
                 "placa" => $placa,
+                "subtotal" => $subtotal,
+                "descuento_porcentaje" => $descuentoPorcentaje,
                 "total" => $total,
                 "estado" => "PENDIENTE"
             ]
@@ -137,8 +161,12 @@ try {
             }
         }
 
-        $stmt = $db->prepare("UPDATE servicios SET estado = :estado WHERE id = :id");
-        $stmt->execute([':estado' => $estado, ':id' => $id]);
+        $stmt = $db->prepare("UPDATE servicios SET estado = :estado, fecha_finalizacion = :fecha_finalizacion WHERE id = :id");
+        $stmt->execute([
+            ':estado' => $estado,
+            ':fecha_finalizacion' => $estado === 'ENTREGADO' ? date('Y-m-d H:i:s') : null,
+            ':id' => $id
+        ]);
 
         echo json_encode(["status" => "success", "message" => "Estado actualizado"]);
 
@@ -147,11 +175,14 @@ try {
         // Historial: el administrador ve todo, el empleado solo ve lo que él mismo registró
         if ($payload['rol'] === 'ADMINISTRADOR') {
             $stmt = $db->query("
-                SELECT s.id, s.fecha, s.estado, s.total, v.placa, v.tipo AS tipo_vehiculo, u.nombre AS empleado_nombre
+                SELECT s.id, s.fecha, s.fecha_finalizacion, s.estado, s.total, s.descuento_porcentaje,
+                       v.placa, v.tipo AS tipo_vehiculo, u.nombre AS empleado_nombre, cl.nombre AS cliente_nombre,
+                       TIMESTAMPDIFF(MINUTE, s.fecha, s.fecha_finalizacion) AS duracion_minutos
                 FROM servicios s
                 JOIN vehiculos v ON v.id = s.vehiculo_id
                 JOIN empleados e ON e.id = s.empleado_id
                 JOIN usuarios u ON u.id = e.usuario_id
+                LEFT JOIN clientes cl ON cl.id = s.cliente_id
                 ORDER BY s.fecha DESC
                 LIMIT 50
             ");
@@ -162,7 +193,9 @@ try {
             $empleado = $stmtEmp->fetch();
 
             $stmt = $db->prepare("
-                SELECT s.id, s.fecha, s.estado, s.total, v.placa, v.tipo AS tipo_vehiculo
+                SELECT s.id, s.fecha, s.fecha_finalizacion, s.estado, s.total, s.descuento_porcentaje,
+                       v.placa, v.tipo AS tipo_vehiculo,
+                       TIMESTAMPDIFF(MINUTE, s.fecha, s.fecha_finalizacion) AS duracion_minutos
                 FROM servicios s
                 JOIN vehiculos v ON v.id = s.vehiculo_id
                 WHERE s.empleado_id = :empleado_id

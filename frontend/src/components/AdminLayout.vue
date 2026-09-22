@@ -52,7 +52,14 @@
         <div v-if="vistaActual === 'servicios'">
           <TiposServicio />
           <hr class="my-4">
+          <TarifasMatriz />
+          <hr class="my-4">
           <ColaServicios />
+        </div>
+        <Empleados v-else-if="vistaActual === 'empleados'" />
+        <div v-else-if="vistaActual === 'convenios'">
+          <Convenios />
+          <ClientesConvenio />
         </div>
         <div v-else class="card shadow-sm p-4 border-0">
           <h5 class="card-title mb-2">{{ tituloVistaActual }}</h5>
@@ -68,7 +75,11 @@
 <script setup>
 import { computed } from 'vue'
 import TiposServicio from './admin/TiposServicio.vue'
+import TarifasMatriz from './admin/TarifasMatriz.vue'
 import ColaServicios from './admin/ColaServicios.vue'
+import Empleados from './admin/Empleados.vue'
+import Convenios from './admin/Convenios.vue'
+import ClientesConvenio from './admin/ClientesConvenio.vue'
 
 const props = defineProps({
   usuario: { type: Object, required: true },

@@ -28,7 +28,7 @@
                 type="button"
                 class="btn flex-fill py-3"
                 :class="tipoVehiculo === tipo ? 'btn-dark' : 'btn-outline-secondary'"
-                @click="tipoVehiculo = tipo"
+                @click="seleccionarVehiculo(tipo)"
               >
                 {{ tipo }}
               </button>
@@ -37,23 +37,24 @@
 
           <div class="card border-0 shadow-sm p-3 mb-3">
             <h6 class="mb-3">Tipo de Servicio</h6>
-            <div v-if="cargandoTipos" class="text-muted small">Cargando catálogo...</div>
-            <div v-else-if="tiposServicio.length === 0" class="text-muted small">
-              No hay tipos de servicio registrados todavía (créalos primero desde el panel de administrador).
+            <div v-if="!tipoVehiculo" class="text-muted small">Primero selecciona el tipo de vehículo.</div>
+            <div v-else-if="cargandoTipos" class="text-muted small">Cargando servicios disponibles...</div>
+            <div v-else-if="tiposDisponibles.length === 0" class="text-muted small">
+              No hay servicios con precio definido para {{ tipoVehiculo }} todavía (configúralos desde el panel de administrador).
             </div>
             <div v-else class="row g-2">
-              <div class="col-md-6" v-for="tipo in tiposServicio" :key="tipo.id">
+              <div class="col-md-6" v-for="tipo in tiposDisponibles" :key="tipo.tipo_servicio_id">
                 <div class="form-check border rounded p-2">
                   <input
                     class="form-check-input"
                     type="checkbox"
-                    :id="'tipo-' + tipo.id"
-                    :value="tipo.id"
+                    :id="'tipo-' + tipo.tipo_servicio_id"
+                    :value="tipo.tipo_servicio_id"
                     v-model="tiposSeleccionados"
                   >
-                  <label class="form-check-label d-flex justify-content-between" :for="'tipo-' + tipo.id">
+                  <label class="form-check-label d-flex justify-content-between" :for="'tipo-' + tipo.tipo_servicio_id">
                     <span>{{ tipo.nombre }}</span>
-                    <span class="text-muted">${{ Number(tipo.precioBase).toLocaleString('es-CO') }}</span>
+                    <span class="text-muted">${{ Number(tipo.precio).toLocaleString('es-CO') }}</span>
                   </label>
                 </div>
               </div>
@@ -104,22 +105,24 @@
               <th>Placa</th>
               <th>Vehículo</th>
               <th>Total</th>
+              <th>Duración</th>
               <th>Estado</th>
               <th></th>
             </tr>
           </thead>
           <tbody>
             <tr v-if="cargandoServicios">
-              <td colspan="6" class="text-center text-muted py-3">Cargando...</td>
+              <td colspan="7" class="text-center text-muted py-3">Cargando...</td>
             </tr>
             <tr v-else-if="misServicios.length === 0">
-              <td colspan="6" class="text-center text-muted py-3">Aún no has registrado servicios</td>
+              <td colspan="7" class="text-center text-muted py-3">Aún no has registrado servicios</td>
             </tr>
             <tr v-for="s in misServicios" :key="s.id">
               <td>{{ formatearFecha(s.fecha) }}</td>
               <td>{{ s.placa }}</td>
               <td>{{ s.tipo_vehiculo }}</td>
               <td>${{ Number(s.total).toLocaleString('es-CO') }}</td>
+              <td>{{ s.duracion_minutos !== null ? s.duracion_minutos + ' min' : '—' }}</td>
               <td><span class="badge bg-secondary">{{ s.estado }}</span></td>
               <td class="text-end">
                 <button
@@ -147,7 +150,7 @@ defineEmits(['cerrar-sesion'])
 
 const tiposVehiculo = ['CARRO', 'MOTO', 'CAMIONETA']
 const tipoVehiculo = ref('')
-const tiposServicio = ref([])
+const tiposDisponibles = ref([])
 const tiposSeleccionados = ref([])
 const placa = ref('')
 const cargandoTipos = ref(false)
@@ -155,22 +158,24 @@ const registrando = ref(false)
 const mensaje = ref('')
 const mensajeTipo = ref('success')
 
-const cargarTiposServicio = async () => {
+const seleccionarVehiculo = async (tipo) => {
+  tipoVehiculo.value = tipo
+  tiposSeleccionados.value = [] // las opciones cambian, no arrastramos selección del vehículo anterior
   cargandoTipos.value = true
   try {
-    const res = await api.get('/controllers/tipos_servicio.php')
-    tiposServicio.value = res.data.data || []
+    const res = await api.get(`/controllers/tarifas.php?tipo_vehiculo=${tipo}`)
+    tiposDisponibles.value = res.data.data || []
   } catch (e) {
-    mostrarMensaje('No se pudo cargar el catálogo de servicios', 'error')
+    mostrarMensaje('No se pudo cargar los servicios disponibles', 'error')
   } finally {
     cargandoTipos.value = false
   }
 }
 
 const subtotal = computed(() => {
-  return tiposServicio.value
-    .filter(t => tiposSeleccionados.value.includes(t.id))
-    .reduce((suma, t) => suma + Number(t.precioBase), 0)
+  return tiposDisponibles.value
+    .filter(t => tiposSeleccionados.value.includes(t.tipo_servicio_id))
+    .reduce((suma, t) => suma + Number(t.precio), 0)
 })
 
 const puedeRegistrar = computed(() => tipoVehiculo.value !== '' && tiposSeleccionados.value.length > 0)
@@ -237,7 +242,6 @@ const formatearFecha = (fecha) => {
 }
 
 onMounted(() => {
-  cargarTiposServicio()
   cargarMisServicios()
 })
 </script>

@@ -12,24 +12,34 @@
             <th>Fecha</th>
             <th>Placa</th>
             <th>Vehículo</th>
+            <th>Cliente</th>
             <th>Empleado</th>
             <th>Total</th>
+            <th>Duración</th>
             <th>Estado</th>
           </tr>
         </thead>
         <tbody>
           <tr v-if="cargando">
-            <td colspan="6" class="text-center text-muted py-3">Cargando...</td>
+            <td colspan="8" class="text-center text-muted py-3">Cargando...</td>
           </tr>
           <tr v-else-if="servicios.length === 0">
-            <td colspan="6" class="text-center text-muted py-3">Aún no hay servicios registrados</td>
+            <td colspan="8" class="text-center text-muted py-3">Aún no hay servicios registrados</td>
           </tr>
           <tr v-for="s in servicios" :key="s.id">
             <td>{{ formatearFecha(s.fecha) }}</td>
             <td>{{ s.placa }}</td>
             <td>{{ s.tipo_vehiculo }}</td>
+            <td>
+              <span v-if="s.cliente_nombre">
+                {{ s.cliente_nombre }}
+                <span v-if="s.descuento_porcentaje > 0" class="badge bg-success ms-1">-{{ s.descuento_porcentaje }}%</span>
+              </span>
+              <span v-else class="text-muted">—</span>
+            </td>
             <td>{{ s.empleado_nombre }}</td>
             <td>${{ Number(s.total).toLocaleString('es-CO') }}</td>
+            <td>{{ s.duracion_minutos !== null ? s.duracion_minutos + ' min' : '—' }}</td>
             <td>
               <select
                 class="form-select form-select-sm"
